@@ -72,7 +72,7 @@ The differences that do exist are as follows:
   (first (-safe-repr object {} None 0 True)))
 
 (defn readable? [object]
-  "Determine if (saferepr object) is readable by (eval)."
+  "Determine if (saferepr object) is readable by (hy.eval)."
   (get (-safe-repr object {} None 0 True) 1))
 
 (defn recursive? [object]

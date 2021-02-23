@@ -196,7 +196,7 @@ def read(from_file=sys.stdin, eof=""):
 
       ::
 
-         => (eval (read))
+         => (hy.eval (read))
          (+ 2 2)
          4
 
@@ -204,9 +204,9 @@ def read(from_file=sys.stdin, eof=""):
 
          => (import io)
          => (setv buffer (io.StringIO "(+ 2 2)\\n(- 2 1)"))
-         => (eval (read :from-file buffer))
+         => (hy.eval (read :from-file buffer))
          4
-         => (eval (read :from-file buffer))
+         => (hy.eval (read :from-file buffer))
          1
 
       ::
@@ -218,7 +218,7 @@ def read(from_file=sys.stdin, eof=""):
          ...  (try (while True
          ...         (setv exp (read f))
          ...         (print "OHY" exp)
-         ...         (eval exp))
+         ...         (hy.eval exp))
          ...       (except [e EOFError]
          ...         (print "EOF!"))))
          OHY HyExpression([
@@ -262,7 +262,7 @@ def read_str(input):
 
       ::
 
-         => (eval (read-str "(print 1)"))
+         => (hy.eval (read-str "(print 1)"))
          1
   """
     return read(StringIO(str(input)))
