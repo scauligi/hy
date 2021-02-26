@@ -7,7 +7,6 @@
 ;;; They are automatically required everywhere, even inside hy.core modules.
 
 (eval-and-compile
-  (import hy)
   ((hy.macros.macro "defmacro")
    (fn [&name macro-name lambda-list &rest body]
      #[[the defmacro macro
@@ -63,7 +62,6 @@
                                           macro-name --file-- None))))
      ;; this looks familiar...
      `(eval-and-compile
-        (import hy)
         ((hy.macros.macro ~(str macro-name))
          (fn ~(+ `[&name] lambda-list)
            ~@body))))))
@@ -267,7 +265,6 @@
        => (render-html-tag \"p\" \" --- \" (render-html-tag \"span\" \"\" :class \"fancy\" \"I'm fancy!\") \"I'm to the right of fancy\" \"I'm alone :(\")
        '<p><span class=\"fancy\">I\'m fancy!</span> --- I\'m to right right of fancy --- I\'m alone :(</p>'
   "
-  (import hy)
   (if (not (= (type name) hy.HySymbol))
     (macro-error name "defn takes a name as first argument"))
   `(setv ~name (fn* ~@args)))
@@ -284,7 +281,6 @@
 
        => (defn/a name [params] body)
   "
-  (import hy)
   (if (not (= (type name) hy.HySymbol))
     (macro-error name "defn/a takes a name as first argument"))
   (if (not (isinstance lambda-list hy.HyList))
