@@ -170,15 +170,13 @@ class Result(object):
     The Result object is interoperable with python AST objects: when an AST
     object gets added to a Result object, it gets converted on-the-fly.
     """
-    __slots__ = ("imports", "stmts", "temp_variables",
-                 "_expr", "__used_expr")
+    __slots__ = ("stmts", "temp_variables", "_expr", "__used_expr")
 
     def __init__(self, *args, **kwargs):
         if args:
             # emulate kw-only args for future bits.
             raise TypeError("Yo: Hacker: don't pass me real args, dingus")
 
-        self.imports = defaultdict(set)
         self.stmts = []
         self.temp_variables = []
         self._expr = None
@@ -187,7 +185,7 @@ class Result(object):
 
         # XXX: Make sure we only have AST where we should.
         for kwarg in kwargs:
-            if kwarg not in ["imports", "stmts", "expr", "temp_variables"]:
+            if kwarg not in ["stmts", "expr", "temp_variables"]:
                 raise TypeError(
                     "%s() got an unexpected keyword argument '%s'" % (
                         self.__class__.__name__, kwarg))
@@ -219,13 +217,9 @@ class Result(object):
             return self.stmts[-1].col_offset
         return None
 
-    def add_imports(self, mod, imports):
-        """Autoimport `imports` from `mod`"""
-        self.imports[mod].update(imports)
-
     def is_expr(self):
         """Check whether I am a pure expression"""
-        return self._expr and not (self.imports or self.stmts)
+        return self._expr and not self.stmts
 
     @property
     def force_expr(self):
@@ -298,7 +292,6 @@ class Result(object):
 
         # Fairly obvious addition
         result = Result()
-        result.imports = other.imports
         result.stmts = self.stmts + other.stmts
         result.expr = other.expr
         result.temp_variables = other.temp_variables
@@ -307,9 +300,8 @@ class Result(object):
 
     def __str__(self):
         return (
-            "Result(imports=[%s], stmts=[%s], expr=%s)"
+            "Result(stmts=[%s], expr=%s)"
         % (
-            ", ".join(ast.dump(x) for x in self.imports),
             ", ".join(ast.dump(x) for x in self.stmts),
             ast.dump(self.expr) if self.expr else None
         ))
@@ -361,7 +353,6 @@ class HyASTCompiler(object):
             information for informative error messages and debugging.
         """
         self.anon_var_count = 0
-        self.imports = defaultdict(set)
         self.temp_if = None
 
         if not inspect.ismodule(module):
@@ -378,43 +369,9 @@ class HyASTCompiler(object):
         # compilation.
         self.module.__dict__.setdefault('__macros__', {})
 
-        self.can_use_stdlib = not self.module_name.startswith("hy.core")
-
-        self._stdlib = {}
-
-        # Everything in core needs to be explicit (except for
-        # the core macros, which are built with the core functions).
-        if self.can_use_stdlib:
-            # Load stdlib macros into the module namespace.
-            load_macros(self.module)
-
-            # Populate _stdlib.
-            for stdlib_module in hy.core.STDLIB:
-                mod = importlib.import_module(stdlib_module)
-                for e in map(ast_str, getattr(mod, 'EXPORTS', [])):
-                    self._stdlib[e] = stdlib_module
-
     def get_anon_var(self):
         self.anon_var_count += 1
         return "_hy_anon_var_%s" % self.anon_var_count
-
-    def update_imports(self, result):
-        """Retrieve the imports from the result object"""
-        for mod in result.imports:
-            self.imports[mod].update(result.imports[mod])
-
-    def imports_as_stmts(self, expr):
-        """Convert the Result's imports to statements"""
-        ret = Result()
-        for module, names in self.imports.items():
-            if None in names:
-                ret += self.compile(mkexpr('import', module).replace(expr))
-            names = sorted(name for name in names if name)
-            if names:
-                ret += self.compile(mkexpr('import',
-                    mklist(module, mklist(*names))))
-        self.imports = defaultdict(set)
-        return ret.stmts
 
     def compile_atom(self, atom):
         # Compilation methods may mutate the atom, so copy it first.
@@ -426,7 +383,6 @@ class HyASTCompiler(object):
             return Result()
         try:
             ret = self.compile_atom(tree)
-            self.update_imports(ret)
             return ret
         except HyCompileError:
             # compile calls compile, so we're going to have multiple raise
@@ -557,7 +513,7 @@ class HyASTCompiler(object):
         `level` is the level of quasiquoting of the current form. We can
         unquote if level is 0.
 
-        Returns a three-tuple (`imports`, `expression`, `splice`).
+        Returns a two-tuple (`expression`, `splice`).
 
         The `splice` return value is used to mark `unquote-splice`d forms.
         We need to distinguish them as want to concatenate them instead of
@@ -572,22 +528,20 @@ class HyASTCompiler(object):
             if len(form) != 2:
                 raise HyTypeError("`%s' needs 1 argument, got %s" % op, len(form) - 1,
                                   self.filename, form, self.source)
-            return set(), form[1], op == "unquote-splice"
+            return form[1], op == "unquote-splice"
         elif op == "quasiquote":
             level += 1
         elif op in ("unquote", "unquote-splice"):
             level -= 1
 
         hytype = form.__class__
-        imports = set([hytype.__name__])
         name = ".".join((hytype.__module__, hytype.__name__))
         body = [form]
 
         if isinstance(form, HySequence):
             contents = []
             for x in form:
-                f_imps, f_contents, splice = self._render_quoted_form(x, level)
-                imports.update(f_imps)
+                f_contents, splice = self._render_quoted_form(x, level)
                 if splice:
                     contents.append(HyExpression([
                         HySymbol("list"),
@@ -617,14 +571,13 @@ class HyASTCompiler(object):
                 body.extend([HyKeyword("brackets"), form.brackets])
 
         ret = HyExpression([HySymbol(name)] + body).replace(form)
-        return imports, ret, False
+        return ret, False
 
     @special(["quote", "quasiquote"], [FORM])
     def compile_quote(self, expr, root, arg):
         level = Inf if root == "quote" else 0   # Only quasiquotes can unquote
-        imports, stmts, _ = self._render_quoted_form(arg, level)
+        stmts, _ = self._render_quoted_form(arg, level)
         ret = self.compile(stmts)
-        ret.add_imports("hy", imports)
         return ret
 
     @special("unpack-iterable", [FORM])
@@ -1200,7 +1153,6 @@ class HyASTCompiler(object):
                          prefix=prefix):
                 # Actually calling `require` is necessary for macro expansions
                 # occurring during compilation.
-                self.imports['hy.macros'].update([None])
                 # The `require` we're creating in AST is the same as above, but used at
                 # run-time (e.g. when modules are loaded via bytecode).
                 ret += self.compile(HyExpression([
@@ -1848,9 +1800,6 @@ class HyASTCompiler(object):
                 attr=ast_str(local),
                 ctx=ast.Load())
 
-        if self.can_use_stdlib and ast_str(symbol) in self._stdlib:
-            self.imports[self._stdlib[ast_str(symbol)]].add(ast_str(symbol))
-
         if ast_str(symbol) in ("None", "False", "True"):
             return asty.Constant(symbol, value =
                 ast.literal_eval(ast_str(symbol)))
@@ -1865,7 +1814,6 @@ class HyASTCompiler(object):
             func=asty.Name(obj, id="HyKeyword", ctx=ast.Load()),
             args=[asty.Str(obj, s=obj.name)],
             keywords=[])
-        ret.add_imports("hy", {"HyKeyword"})
         return ret
 
     @builds_model(HyString, HyBytes)
