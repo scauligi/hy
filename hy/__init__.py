@@ -19,6 +19,7 @@ from hy.models import HyExpression, HyInteger, HyKeyword, HyComplex, HyString, H
 
 
 import hy.importer  # NOQA
+hy.importer._inject_builtins()
 # we import for side-effects.
 
 
