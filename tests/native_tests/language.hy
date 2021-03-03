@@ -1657,7 +1657,7 @@ macros()
 (defmacro identify-keywords [&rest elts]
   `(list
     (map
-     (fn [x] (if (is-keyword x) "keyword" "other"))
+     (fn [x] (if (keyword? x) "keyword" "other"))
      ~elts)))
 
 (defn test-keywords-and-macros []
