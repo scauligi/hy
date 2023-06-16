@@ -144,7 +144,7 @@ class HyImporter:
 _py_source_to_code = importlib.machinery.SourceFileLoader.source_to_code
 
 def _install_importer():
-    importlib.machinery.SOURCE_SUFFIXES.insert(0, ".hy")
+    # importlib.machinery.SOURCE_SUFFIXES.insert(0, ".hy")
 
     if (".hy", False, False) not in zipimport._zip_searchorder:
         zipimport._zip_searchorder += ((".hy", False, False),)
@@ -165,14 +165,27 @@ def _install_importer():
 
         zipimport._compile_source = _hy_compile_source
 
+    from importlib._bootstrap_external import _get_supported_file_loaders, SOURCE_SUFFIXES
+    _quode = _get_supported_file_loaders.__code__
+    def _fake():
+        extensions = ExtensionFileLoader, _imp.extension_suffixes()
+        source = SourceFileLoader, [".py"]
+        hy_source = HyLoader, [".hy"]
+        bytecode = SourcelessFileLoader, BYTECODE_SUFFIXES
+        return [extensions, hy_source, source, bytecode]
+    _get_supported_file_loaders.__code__ = _fake.__code__
+    _get_supported_file_loaders.__globals__["HyLoader"] = HyLoader
+    # SOURCE_SUFFIXES.append('.hy')
+
     for i, hook in enumerate(sys.path_hooks):
         if hook.__name__ == 'path_hook_for_FileFinder':
-            sys.path_hooks[i] = HyImporter(hook)
+            sys.path_hooks.pop(i)
             break
 
     #  This is actually needed; otherwise, pre-created finders assigned to the
     #  current dir (i.e. `''`) in `sys.path` will not catch absolute imports of
     #  directory-local modules!
+    sys.path_hooks.append(importlib.machinery.FileFinder.path_hook(*_get_supported_file_loaders()))
     sys.path_importer_cache.clear()
 
     # Do this one just in case?
@@ -185,6 +198,8 @@ runhy = importlib.import_module("runpy")
 runhy._get_code_from_file = partial(_get_code_from_file, hy_src_check=_could_be_hy_src)
 del sys.modules["runpy"]
 
+# We also create a separate version of py_compile, "hyc_compile", that
+# uses the hy compiler.
 hyc_compile = importlib.import_module("py_compile")
 _py_compile_compile = hyc_compile.compile
 def _hyc_compile_compile(*args, **kwargs):
