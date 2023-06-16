@@ -102,9 +102,6 @@ def _get_code_from_file(run_name, fname=None, hy_src_check=lambda x: x.endswith(
     return (code, fname)
 
 
-importlib.machinery.SOURCE_SUFFIXES.insert(0, ".hy")
-_py_source_to_code = importlib.machinery.SourceFileLoader.source_to_code
-
 
 def _could_be_hy_src(filename):
     return os.path.isfile(filename) and (
@@ -125,36 +122,42 @@ def _hy_source_to_code(self, data, path, _optimize=-1):
     return _py_source_to_code(self, data, path, _optimize=_optimize)
 
 
-importlib.machinery.SourceFileLoader.source_to_code = _hy_source_to_code
+
+_py_source_to_code = importlib.machinery.SourceFileLoader.source_to_code
+
+def _install_importer():
+    importlib.machinery.SOURCE_SUFFIXES.insert(0, ".hy")
+
+    importlib.machinery.SourceFileLoader.source_to_code = _hy_source_to_code
 
 
-if (".hy", False, False) not in zipimport._zip_searchorder:
-    zipimport._zip_searchorder += ((".hy", False, False),)
-    _py_compile_source = zipimport._compile_source
+    if (".hy", False, False) not in zipimport._zip_searchorder:
+        zipimport._zip_searchorder += ((".hy", False, False),)
+        _py_compile_source = zipimport._compile_source
 
-    def _hy_compile_source(pathname, source):
-        if not pathname.endswith(".hy"):
-            return _py_compile_source(pathname, source)
-        return compile(
-            hy_compile(
-                read_many(source.decode("UTF-8"), filename=pathname, skip_shebang=True),
-                f"<zip:{pathname}>",
-            ),
-            pathname,
-            "exec",
-            dont_inherit=True,
-        )
+        def _hy_compile_source(pathname, source):
+            if not pathname.endswith(".hy"):
+                return _py_compile_source(pathname, source)
+            return compile(
+                hy_compile(
+                    read_many(source.decode("UTF-8"), filename=pathname, skip_shebang=True),
+                    f"<zip:{pathname}>",
+                ),
+                pathname,
+                "exec",
+                dont_inherit=True,
+            )
 
-    zipimport._compile_source = _hy_compile_source
+        zipimport._compile_source = _hy_compile_source
 
 
-#  This is actually needed; otherwise, pre-created finders assigned to the
-#  current dir (i.e. `''`) in `sys.path` will not catch absolute imports of
-#  directory-local modules!
-sys.path_importer_cache.clear()
+    #  This is actually needed; otherwise, pre-created finders assigned to the
+    #  current dir (i.e. `''`) in `sys.path` will not catch absolute imports of
+    #  directory-local modules!
+    sys.path_importer_cache.clear()
 
-# Do this one just in case?
-importlib.invalidate_caches()
+    # Do this one just in case?
+    importlib.invalidate_caches()
 
 # These aren't truly cross-compliant.
 # They're useful for testing, though.
