@@ -6,7 +6,6 @@ import os
 import platform
 import py_compile
 import re
-import runpy
 import sys
 import types
 from contextlib import nullcontext
@@ -258,7 +257,7 @@ def cmdline_handler(scriptname, argv):
         if repl: raise ValueError()
         set_path("")
         sys.argv = [program] + argv
-        runpy.run_module(hy.mangle(action_arg), run_name="__main__", alter_sys=True)
+        runhy.run_module(hy.mangle(action_arg), run_name="__main__", alter_sys=True)
         return 0
     elif action == "run_script_stdin":
         if repl:

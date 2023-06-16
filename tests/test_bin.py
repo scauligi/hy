@@ -376,7 +376,7 @@ def test_circular_macro_require():
 
 def test_macro_require():
     """Confirm that a `require` will load macros into the non-module namespace
-    (i.e. `exec(code, locals)`) used by `runpy.run_path`.
+    (i.e. `exec(code, locals)`) used by `runhy.run_path`.
     In other words, this confirms that the AST generated for a `require` will
     load macros into the unnamed namespace its run in."""
 

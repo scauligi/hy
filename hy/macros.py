@@ -222,7 +222,7 @@ def require(source_module, target_module, assignments, prefix="", target_module_
     )
 
     # Let's do a quick check to make sure the source module isn't actually
-    # the module being compiled (e.g. when `runpy` executes a module's code
+    # the module being compiled (e.g. when `runhy` executes a module's code
     # in `__main__`).
     # We use the module's underlying filename for this (when they exist), since
     # it's the most "fixed" attribute.

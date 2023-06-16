@@ -1,6 +1,5 @@
 import ast
 import importlib
-import runpy
 import sys
 from importlib import reload
 from pathlib import Path
@@ -10,7 +9,7 @@ import pytest
 import hy
 from hy.compiler import hy_compile, hy_eval
 from hy.errors import HyLanguageError, hy_exc_handler
-from hy.importer import HyLoader
+from hy.importer import HyLoader, runhy
 from hy.reader import read_many
 from hy.reader.exceptions import PrematureEndOfInput
 
@@ -25,22 +24,22 @@ def test_basics():
     assert hasattr(bin_mod, "_null_fn_for_import_test")
 
 
-def test_runpy():
-    # `runpy` won't update cached bytecode. It's not clear if that's
+def test_runhy():
+    # `runhy` won't update cached bytecode. It's not clear if that's
     # intentional.
 
-    basic_ns = runpy.run_path("tests/resources/importer/basic.hy")
+    basic_ns = runhy.run_path("tests/resources/importer/basic.hy")
     assert "square" in basic_ns
 
-    main_ns = runpy.run_path("tests/resources/bin")
+    main_ns = runhy.run_path("tests/resources/bin")
     assert main_ns["visited_main"] == 1
     del main_ns
 
-    main_ns = runpy.run_module("tests.resources.bin")
+    main_ns = runhy.run_module("tests.resources.bin")
     assert main_ns["visited_main"] == 1
 
     with pytest.raises(IOError):
-        runpy.run_path("tests/resources/foobarbaz.py")
+        runhy.run_path("tests/resources/foobarbaz.py")
 
 
 def test_stringer():
@@ -227,7 +226,7 @@ def test_circular(monkeypatch):
     """Test circular imports by creating a temporary file/module that calls a
     function that imports itself."""
     monkeypatch.syspath_prepend("tests/resources/importer")
-    assert runpy.run_module("circular")["f"]() == 1
+    assert runhy.run_module("circular")["f"]() == 1
 
 
 def test_shadowed_basename(monkeypatch):

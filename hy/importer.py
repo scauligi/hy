@@ -25,8 +25,8 @@ def loader_module_obj(loader):
     reconcile Hy with such attempts.
 
     For example, if we're first compiling a Hy script starting from
-    `runpy.run_path`, the Hy compiler will need a valid module object in which
-    to run, but, given the way `runpy.run_path` works, there might not be one
+    `runhy.run_path`, the Hy compiler will need a valid module object in which
+    to run, but, given the way `runhy.run_path` works, there might not be one
     yet (e.g. `__main__` for a .hy file).  We compensate by properly loading
     the module here.
 
