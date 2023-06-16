@@ -174,10 +174,6 @@ runhy._get_code_from_file = partial(_get_code_from_file, hy_src_check=_could_be_
 
 del sys.modules["runpy"]
 
-runpy = importlib.import_module("runpy")
-
-_runpy_get_code_from_file = runpy._get_code_from_file
-runpy._get_code_from_file = _get_code_from_file
 
 
 def _import_from_path(name, path):
