@@ -85,7 +85,7 @@ def test_import_autocompiles(tmp_path):
     p.write_text('(defn pyctest [s] (+ "X" s "Y"))')
 
     def import_from_path(path):
-        spec = importlib.util.spec_from_file_location("mymodule", path)
+        spec = importlib.util.spec_from_file_location("mymodule", path, loader=HyLoader)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module

@@ -4,7 +4,6 @@ import importlib
 import io
 import os
 import platform
-import py_compile
 import re
 import sys
 import types
@@ -15,7 +14,7 @@ import hy
 from hy._compat import PY3_9
 from hy.compiler import hy_compile, hy_eval
 from hy.errors import HyLanguageError, filtered_hy_exceptions, hy_exc_handler
-from hy.importer import runhy
+from hy.importer import runhy, hyc_compile
 from hy.macros import require
 from hy.reader import read_many
 from hy.repl import REPL
@@ -343,8 +342,8 @@ def hyc_main():
                 ),
                 file=sys.stderr,
             )
-            py_compile.compile(filename, doraise=True)
-        except py_compile.PyCompileError as error:
+            hyc_compile.compile(filename, doraise=True)
+        except hyc_compile.PyCompileError as error:
             # return value to indicate at least one failure
             rv = 1
             print(error.msg, file=sys.stderr)

@@ -106,7 +106,7 @@ def _get_code_from_file(run_name, fname=None, hy_src_check=lambda x: x.endswith(
 def _could_be_hy_src(filename):
     return os.path.isfile(filename) and (
         os.path.splitext(filename)[1]
-        not in set(importlib.machinery.SOURCE_SUFFIXES) - {".hy"}
+        not in importlib.machinery.SOURCE_SUFFIXES
     )
 
 
@@ -123,13 +123,28 @@ def _hy_source_to_code(self, data, path, _optimize=-1):
 
 
 
+class HyLoader(importlib.machinery.SourceFileLoader):
+    def source_to_code(self, data, path, *, _optimize=-1):
+        return _hy_source_to_code(self, data, path, _optimize=_optimize)
+
+class HyImporter:
+    def __init__(self, hook):
+        self._base = hook
+        closure = inspect.getclosurevars(hook)
+        self._path_isdir = closure.globals['_path_isdir']
+        self.cls = closure.nonlocals['cls']
+        self.loader_details = list(closure.nonlocals['loader_details'])
+        self.loader_details.insert(0, (HyLoader, ['.hy']))
+
+    def __call__(self, path):
+        if not self._path_isdir(path):
+            raise ImportError('only directories are supported', path=path)
+        return self.cls(path, *self.loader_details)
+
 _py_source_to_code = importlib.machinery.SourceFileLoader.source_to_code
 
 def _install_importer():
     importlib.machinery.SOURCE_SUFFIXES.insert(0, ".hy")
-
-    importlib.machinery.SourceFileLoader.source_to_code = _hy_source_to_code
-
 
     if (".hy", False, False) not in zipimport._zip_searchorder:
         zipimport._zip_searchorder += ((".hy", False, False),)
@@ -150,6 +165,10 @@ def _install_importer():
 
         zipimport._compile_source = _hy_compile_source
 
+    for i, hook in enumerate(sys.path_hooks):
+        if hook.__name__ == 'path_hook_for_FileFinder':
+            sys.path_hooks[i] = HyImporter(hook)
+            break
 
     #  This is actually needed; otherwise, pre-created finders assigned to the
     #  current dir (i.e. `''`) in `sys.path` will not catch absolute imports of
@@ -159,24 +178,25 @@ def _install_importer():
     # Do this one just in case?
     importlib.invalidate_caches()
 
-# These aren't truly cross-compliant.
-# They're useful for testing, though.
-class HyImporter(importlib.machinery.FileFinder):
-    pass
-
-
-class HyLoader(importlib.machinery.SourceFileLoader):
-    pass
-
 
 # We create a separate version of runpy, "runhy", that prefers Hy source over
 # Python.
 runhy = importlib.import_module("runpy")
-
 runhy._get_code_from_file = partial(_get_code_from_file, hy_src_check=_could_be_hy_src)
-
 del sys.modules["runpy"]
 
+hyc_compile = importlib.import_module("py_compile")
+_py_compile_compile = hyc_compile.compile
+def _hyc_compile_compile(*args, **kwargs):
+    SourceFileLoader = importlib.machinery.SourceFileLoader
+    importlib.machinery.SourceFileLoader = HyLoader
+    try:
+        return _py_compile_compile(*args, **kwargs)
+    finally:
+        importlib.machinery.SourceFileLoader = SourceFileLoader
+
+hyc_compile.compile = _hyc_compile_compile
+del sys.modules["py_compile"]
 
 
 def _inject_builtins():
