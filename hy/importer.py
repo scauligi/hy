@@ -4,15 +4,36 @@ import importlib.machinery
 import inspect
 import os
 import pkgutil
+import py_compile
+import runpy
 import sys
 import types
 import zipimport
 from contextlib import contextmanager
-from functools import partial, wraps
+from functools import wraps
 
 import hy
 from hy.compiler import hy_compile
 from hy.reader import read_many
+
+
+@contextmanager
+def _patch(obj, attr, replacement):
+    _old = getattr(obj, attr)
+    setattr(obj, attr, replacement)
+    try:
+        yield
+    finally:
+        setattr(obj, attr, _old)
+
+
+def _patched(fn, obj, attr, replacement):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _patch(obj, attr, replacement):
+            return fn(*args, **kwargs)
+
+    return wrapper
 
 
 @contextmanager
@@ -60,38 +81,46 @@ def loader_module_obj(loader):
             del sys.modules[loader.name]
 
 
-def _hy_code_from_file(filename, loader_type=None):
-    """Use PEP-302 loader to produce code for a given Hy source file."""
-    full_fname = os.path.abspath(filename)
-    fname_path, fname_file = os.path.split(full_fname)
-    modname = os.path.splitext(fname_file)[0]
-    sys.path.insert(0, fname_path)
-    try:
-        if loader_type is None:
-            loader = pkgutil.get_loader(modname)
-        else:
-            loader = loader_type(modname, full_fname)
+class HyLoader(importlib.machinery.SourceFileLoader):
+    def source_to_code(self, data, path, *, _optimize=-1):
+        if os.environ.get("HY_MESSAGE_WHEN_COMPILING"):
+            print("Compiling", path, file=sys.stderr)
+        source = data.decode("utf-8")
+        hy_tree = read_many(source, filename=path, skip_shebang=True)
+        with loader_module_obj(self) as module:
+            data = hy_compile(hy_tree, module)
+
+        return super().source_to_code(data, path, _optimize=_optimize)
+
+    @classmethod
+    def code_from_file(cls, filename):
+        """Use PEP-302 loader to produce code for a given Hy source file."""
+        full_fname = os.path.abspath(filename)
+        fname_path, fname_file = os.path.split(full_fname)
+        modname = os.path.splitext(fname_file)[0]
+        loader = cls(modname, full_fname)
         code = loader.get_code(modname)
-    finally:
-        sys.path.pop(0)
 
-    return code
+        return code
 
 
-def _get_code_from_file(run_name, fname=None, hy_src_check=lambda x: x.endswith(".hy")):
+def _could_be_hy_src(filename):
+    return os.path.isfile(filename) and (
+        os.path.splitext(filename)[1] not in importlib.machinery.SOURCE_SUFFIXES
+    )
+
+
+def _runhy_get_code_from_file(run_name, fname):
     """A patch of `runpy._get_code_from_file` that will also run and cache Hy
     code.
     """
-    if fname is None and run_name is not None:
-        fname = run_name
-
     # Check for bytecode first.  (This is what the `runpy` version does!)
     with open(fname, "rb") as f:
         code = pkgutil.read_code(f)
 
     if code is None:
-        if hy_src_check(fname):
-            code = _hy_code_from_file(fname, loader_type=HyLoader)
+        if _could_be_hy_src(fname):
+            code = HyLoader.code_from_file(fname)
         else:
             # Try normal source
             with open(fname, "rb") as f:
@@ -100,49 +129,30 @@ def _get_code_from_file(run_name, fname=None, hy_src_check=lambda x: x.endswith(
                 source = f.read().decode("utf-8")
             code = compile(source, fname, "exec")
 
-    return (code, fname)
+    return code, fname
 
 
+# We create a separate version of runpy, "runhy", that prefers Hy source over
+# Python.
+runhy = types.SimpleNamespace(
+    run_module=runpy.run_module,
+    run_path=_patched(
+        runpy.run_path, runpy, '_get_code_from_file', _runhy_get_code_from_file
+    ),
+)
 
-def _could_be_hy_src(filename):
-    return os.path.isfile(filename) and (
-        os.path.splitext(filename)[1]
-        not in importlib.machinery.SOURCE_SUFFIXES
-    )
 
+# We also create a separate version of py_compile, "hyc_compile", that
+# uses the hy compiler.
+hyc_compile = types.SimpleNamespace(
+    compile=_patched(
+        py_compile.compile, importlib.machinery, 'SourceFileLoader', HyLoader
+    ),
+    PyCompileError=py_compile.PyCompileError,
+)
 
-
-class HyLoader(importlib.machinery.SourceFileLoader):
-    def source_to_code(self, data, path, *, _optimize=-1):
-        if _could_be_hy_src(path):
-            if os.environ.get("HY_MESSAGE_WHEN_COMPILING"):
-                print("Compiling", path, file=sys.stderr)
-            source = data.decode("utf-8")
-            hy_tree = read_many(source, filename=path, skip_shebang=True)
-            with loader_module_obj(self) as module:
-                data = hy_compile(hy_tree, module)
-
-        return _py_source_to_code(self, data, path, _optimize=_optimize)
-
-class HyImporter:
-    def __init__(self, hook):
-        self._base = hook
-        closure = inspect.getclosurevars(hook)
-        self._path_isdir = closure.globals['_path_isdir']
-        self.cls = closure.nonlocals['cls']
-        self.loader_details = list(closure.nonlocals['loader_details'])
-        self.loader_details.insert(0, (HyLoader, ['.hy']))
-
-    def __call__(self, path):
-        if not self._path_isdir(path):
-            raise ImportError('only directories are supported', path=path)
-        return self.cls(path, *self.loader_details)
-
-_py_source_to_code = importlib.machinery.SourceFileLoader.source_to_code
 
 def _install_importer():
-    # importlib.machinery.SOURCE_SUFFIXES.insert(0, ".hy")
-
     if (".hy", False, False) not in zipimport._zip_searchorder:
         zipimport._zip_searchorder += ((".hy", False, False),)
         _py_compile_source = zipimport._compile_source
@@ -152,7 +162,9 @@ def _install_importer():
                 return _py_compile_source(pathname, source)
             return compile(
                 hy_compile(
-                    read_many(source.decode("UTF-8"), filename=pathname, skip_shebang=True),
+                    read_many(
+                        source.decode("UTF-8"), filename=pathname, skip_shebang=True
+                    ),
                     f"<zip:{pathname}>",
                 ),
                 pathname,
@@ -162,17 +174,22 @@ def _install_importer():
 
         zipimport._compile_source = _hy_compile_source
 
-    from importlib._bootstrap_external import _get_supported_file_loaders, SOURCE_SUFFIXES
+    from importlib._bootstrap_external import (
+        SOURCE_SUFFIXES,
+        _get_supported_file_loaders,
+    )
+
     _quode = _get_supported_file_loaders.__code__
+
     def _fake():
         extensions = ExtensionFileLoader, _imp.extension_suffixes()
         source = SourceFileLoader, [".py"]
         hy_source = HyLoader, [".hy"]
         bytecode = SourcelessFileLoader, BYTECODE_SUFFIXES
         return [extensions, hy_source, source, bytecode]
+
     _get_supported_file_loaders.__code__ = _fake.__code__
     _get_supported_file_loaders.__globals__["HyLoader"] = HyLoader
-    # SOURCE_SUFFIXES.append('.hy')
 
     for i, hook in enumerate(sys.path_hooks):
         if hook.__name__ == 'path_hook_for_FileFinder':
@@ -182,44 +199,13 @@ def _install_importer():
     #  This is actually needed; otherwise, pre-created finders assigned to the
     #  current dir (i.e. `''`) in `sys.path` will not catch absolute imports of
     #  directory-local modules!
-    sys.path_hooks.append(importlib.machinery.FileFinder.path_hook(*_get_supported_file_loaders()))
+    sys.path_hooks.insert(
+        i, importlib.machinery.FileFinder.path_hook(*_get_supported_file_loaders())
+    )
     sys.path_importer_cache.clear()
 
     # Do this one just in case?
     importlib.invalidate_caches()
-
-
-# We create a separate version of runpy, "runhy", that prefers Hy source over
-# Python.
-import runpy
-@contextmanager
-def _patch(obj, attr, replacement):
-    _old = getattr(obj, attr)
-    setattr(obj, attr, replacement)
-    try:
-        yield
-    finally:
-        setattr(obj, attr, _old)
-
-def _patched(fn, obj, attr, replacement):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        with _patch(obj, attr, replacement):
-            return fn(*args, **kwargs)
-    return wrapper
-
-_hy_get_code_from_file = partial(_get_code_from_file, hy_src_check=_could_be_hy_src)
-run_module = _patched(runpy.run_module, runpy, '_get_code_from_file', _hy_get_code_from_file)
-run_path = _patched(runpy.run_path, runpy, '_get_code_from_file', _hy_get_code_from_file)
-runhy = types.SimpleNamespace(run_module=run_module, run_path=run_path)
-
-# We also create a separate version of py_compile, "hyc_compile", that
-# uses the hy compiler.
-import py_compile
-_hyc_compile = _patched(py_compile.compile, importlib.machinery, 'SourceFileLoader', HyLoader)
-
-hyc_compile = types.SimpleNamespace(compile=_hyc_compile, PyCompileError=py_compile.PyCompileError)
-
 
 
 def _inject_builtins():
