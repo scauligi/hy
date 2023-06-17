@@ -7,6 +7,9 @@ import pkgutil
 import py_compile
 import runpy
 import sys
+from importlib._bootstrap_external import (
+        _write_atomic
+        )
 import types
 import zipimport
 from contextlib import contextmanager
@@ -81,16 +84,40 @@ def loader_module_obj(loader):
             del sys.modules[loader.name]
 
 
+HY_MAGIC_STRING = b'\x46\x14' + hy.__version__.encode()
+
+def _pyc_to_hdep_path(bytecode_path):
+    return bytecode_path[:-4] + ".hydeps"
+import time
+
 class HyLoader(importlib.machinery.SourceFileLoader):
     def source_to_code(self, data, path, *, _optimize=-1):
         if os.environ.get("HY_MESSAGE_WHEN_COMPILING"):
             print("Compiling", path, file=sys.stderr)
         source = data.decode("utf-8")
         hy_tree = read_many(source, filename=path, skip_shebang=True)
-        with loader_module_obj(self) as module:
-            data = hy_compile(hy_tree, module)
+        with loader_module_obj(self) as self.module:
+            data = hy_compile(hy_tree, self.module)
 
         return super().source_to_code(data, path, _optimize=_optimize)
+
+    def set_data(self, path, data, *, _mode=0o666):
+        super().set_data(path, data, _mode=_mode)
+        hdep_path = _pyc_to_hdep_path(path)
+        deps = set(
+                macro.__module__.encode()
+                for macro in self.module._hy_macros.values()
+                if macro.__module__ != self.module.__name__
+        )
+        ctime = (int(time.time()) & 0xFFFFFFFF).to_bytes(4, 'little')
+        hdeps = bytearray(HY_MAGIC_STRING)
+        hdeps.extend(b"\0")
+        hdeps.extend(ctime)
+        hdeps.extend(b"\0".join(deps))
+        try:
+            importlib._bootstrap_external._write_atomic(hdep_path, hdeps, _mode)
+        except OSError:
+            pass
 
     @classmethod
     def code_from_file(cls, filename):
@@ -147,6 +174,7 @@ runhy = types.SimpleNamespace(
 hyc_compile = types.SimpleNamespace(
     compile=_patched(
         py_compile.compile, importlib.machinery, 'SourceFileLoader', HyLoader
+        # XXX also write hdeps
     ),
     PyCompileError=py_compile.PyCompileError,
 )
