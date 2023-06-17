@@ -1,5 +1,6 @@
 import builtins
 import importlib
+import importlib.machinery
 import inspect
 import os
 import pkgutil
@@ -7,7 +8,7 @@ import sys
 import types
 import zipimport
 from contextlib import contextmanager
-from functools import partial
+from functools import partial, wraps
 
 import hy
 from hy.compiler import hy_compile
@@ -110,22 +111,18 @@ def _could_be_hy_src(filename):
     )
 
 
-def _hy_source_to_code(self, data, path, _optimize=-1):
-    if _could_be_hy_src(path):
-        if os.environ.get("HY_MESSAGE_WHEN_COMPILING"):
-            print("Compiling", path, file=sys.stderr)
-        source = data.decode("utf-8")
-        hy_tree = read_many(source, filename=path, skip_shebang=True)
-        with loader_module_obj(self) as module:
-            data = hy_compile(hy_tree, module)
-
-    return _py_source_to_code(self, data, path, _optimize=_optimize)
-
-
 
 class HyLoader(importlib.machinery.SourceFileLoader):
     def source_to_code(self, data, path, *, _optimize=-1):
-        return _hy_source_to_code(self, data, path, _optimize=_optimize)
+        if _could_be_hy_src(path):
+            if os.environ.get("HY_MESSAGE_WHEN_COMPILING"):
+                print("Compiling", path, file=sys.stderr)
+            source = data.decode("utf-8")
+            hy_tree = read_many(source, filename=path, skip_shebang=True)
+            with loader_module_obj(self) as module:
+                data = hy_compile(hy_tree, module)
+
+        return _py_source_to_code(self, data, path, _optimize=_optimize)
 
 class HyImporter:
     def __init__(self, hook):
@@ -194,24 +191,35 @@ def _install_importer():
 
 # We create a separate version of runpy, "runhy", that prefers Hy source over
 # Python.
-runhy = importlib.import_module("runpy")
-runhy._get_code_from_file = partial(_get_code_from_file, hy_src_check=_could_be_hy_src)
-del sys.modules["runpy"]
+import runpy
+@contextmanager
+def _patch(obj, attr, replacement):
+    _old = getattr(obj, attr)
+    setattr(obj, attr, replacement)
+    try:
+        yield
+    finally:
+        setattr(obj, attr, _old)
+
+def _patched(fn, obj, attr, replacement):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _patch(obj, attr, replacement):
+            return fn(*args, **kwargs)
+    return wrapper
+
+_hy_get_code_from_file = partial(_get_code_from_file, hy_src_check=_could_be_hy_src)
+run_module = _patched(runpy.run_module, runpy, '_get_code_from_file', _hy_get_code_from_file)
+run_path = _patched(runpy.run_path, runpy, '_get_code_from_file', _hy_get_code_from_file)
+runhy = types.SimpleNamespace(run_module=run_module, run_path=run_path)
 
 # We also create a separate version of py_compile, "hyc_compile", that
 # uses the hy compiler.
-hyc_compile = importlib.import_module("py_compile")
-_py_compile_compile = hyc_compile.compile
-def _hyc_compile_compile(*args, **kwargs):
-    SourceFileLoader = importlib.machinery.SourceFileLoader
-    importlib.machinery.SourceFileLoader = HyLoader
-    try:
-        return _py_compile_compile(*args, **kwargs)
-    finally:
-        importlib.machinery.SourceFileLoader = SourceFileLoader
+import py_compile
+_hyc_compile = _patched(py_compile.compile, importlib.machinery, 'SourceFileLoader', HyLoader)
 
-hyc_compile.compile = _hyc_compile_compile
-del sys.modules["py_compile"]
+hyc_compile = types.SimpleNamespace(compile=_hyc_compile, PyCompileError=py_compile.PyCompileError)
+
 
 
 def _inject_builtins():
