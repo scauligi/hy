@@ -1,23 +1,28 @@
 import builtins
 import importlib
 import importlib.machinery
+import importlib.util
 import inspect
 import os
 import pkgutil
 import py_compile
 import runpy
 import sys
-from importlib._bootstrap_external import (
-        _write_atomic
-        )
+import time
 import types
 import zipimport
 from contextlib import contextmanager
 from functools import wraps
+from importlib._bootstrap_external import _write_atomic
 
 import hy
 from hy.compiler import hy_compile
 from hy.reader import read_many
+
+HY_MAGIC_STRING = b'\x46\x14'  # + hy.__version__.encode() + b'\0'
+HY_SOURCE_SUFFIXES = [".hy"]
+HY_DEP_SUFFIX = ".hyd"
+PYTHON_SOURCE_SUFFIXES = importlib.machinery.SOURCE_SUFFIXES.copy()
 
 
 @contextmanager
@@ -84,13 +89,97 @@ def loader_module_obj(loader):
             del sys.modules[loader.name]
 
 
-HY_MAGIC_STRING = b'\x46\x14' + hy.__version__.encode()
-
 def _pyc_to_hdep_path(bytecode_path):
-    return bytecode_path[:-4] + ".hydeps"
-import time
+    return os.path.splitext(bytecode_path)[0] + HY_DEP_SUFFIX
+
+
+def _dprint(*args, **kwargs):
+    if os.environ.get("HY_DEBUG", False):
+        print(*args, **kwargs, file=sys.stderr)
+
 
 class HyLoader(importlib.machinery.SourceFileLoader):
+    def get_data(self, path: str) -> bytes:
+        if (
+            path.endswith(tuple(importlib.machinery.BYTECODE_SUFFIXES))
+            and hy.dont_read_bytecode
+        ):
+            raise FileNotFoundError(f"Not reading bytecode for {path!r}")
+        return super().get_data(path)
+
+    def get_code(self, fullname: str) -> types.CodeType | None:
+        source_path = self.get_filename(fullname)
+        try:
+            bytecode_path = importlib.util.cache_from_source(source_path)
+        except NotImplementedError:
+            bytecode_path = None
+        else:
+            try:
+                exc_details = {"name": fullname, "path": bytecode_path}
+                self._validate_hdeps(bytecode_path, fullname, exc_details)
+            except ImportError:
+                pass
+        res = super().get_code(fullname)
+        return res
+
+    def _validate_hdeps(self, bytecode_path, name, exc_details):
+        hdep_path = _pyc_to_hdep_path(bytecode_path)
+        try:
+            fp = open(hdep_path, 'rb')
+        except OSError:
+            if not sys.dont_write_bytecode:
+                try:
+                    os.unlink(bytecode_path)
+                except OSError:
+                    pass
+            pass
+        else:
+            try:
+                with fp as stream:
+                    magic = stream.read(len(HY_MAGIC_STRING))
+                    if magic != HY_MAGIC_STRING:
+                        msg = (f'bad hdep magic for {name!r}',)
+                        _dprint(msg)
+                        raise ImportError(msg, **exc_details)
+                    ctime = int.from_bytes(stream.read(4), 'little')
+                    hdep_data = stream.read()
+                    if hdep_data:
+                        hdeps = map(bytes.decode, hdep_data.split(b"\0"))
+                        for hdep in hdeps:
+                            spec = importlib.util.find_spec(hdep)
+                            if spec is not None and spec.has_location:
+                                st = spec.loader.path_stats(spec.origin)
+                                if st['mtime'] > ctime:
+                                    msg = f'{exc_details["name"]}: macro dependency {hdep!r} is newer than cached bytecode'
+                                    _dprint(msg)
+                                    raise ImportError(msg, **exc_details)
+                                self._validate_hdeps(spec.cached, hdep, exc_details)
+            except ImportError as e:
+                if not sys.dont_write_bytecode:
+                    try:
+                        os.unlink(bytecode_path)
+                        os.unlink(hdep_path)
+                    except OSError:
+                        pass
+                # re-raise to go back up the chain deleting bytecode
+                raise
+
+    def _cache_bytecode(self, source_path, cache_path, data):
+        super()._cache_bytecode(source_path, cache_path, data)
+        hdep_path = _pyc_to_hdep_path(cache_path)
+        deps = sorted(
+            set(
+                macro.__module__.encode()
+                for macro in self.module._hy_macros.values()
+                if macro.__module__ != self.module.__name__
+            )
+        )
+        ctime = (int(time.time()) & 0xFFFFFFFF).to_bytes(4, 'little')
+        hdeps = bytearray(HY_MAGIC_STRING)
+        hdeps.extend(ctime)
+        hdeps.extend(b"\0".join(deps))
+        self.set_data(hdep_path, hdeps)
+
     def source_to_code(self, data, path, *, _optimize=-1):
         if os.environ.get("HY_MESSAGE_WHEN_COMPILING"):
             print("Compiling", path, file=sys.stderr)
@@ -100,24 +189,6 @@ class HyLoader(importlib.machinery.SourceFileLoader):
             data = hy_compile(hy_tree, self.module)
 
         return super().source_to_code(data, path, _optimize=_optimize)
-
-    def set_data(self, path, data, *, _mode=0o666):
-        super().set_data(path, data, _mode=_mode)
-        hdep_path = _pyc_to_hdep_path(path)
-        deps = set(
-                macro.__module__.encode()
-                for macro in self.module._hy_macros.values()
-                if macro.__module__ != self.module.__name__
-        )
-        ctime = (int(time.time()) & 0xFFFFFFFF).to_bytes(4, 'little')
-        hdeps = bytearray(HY_MAGIC_STRING)
-        hdeps.extend(b"\0")
-        hdeps.extend(ctime)
-        hdeps.extend(b"\0".join(deps))
-        try:
-            importlib._bootstrap_external._write_atomic(hdep_path, hdeps, _mode)
-        except OSError:
-            pass
 
     @classmethod
     def code_from_file(cls, filename):
@@ -133,7 +204,7 @@ class HyLoader(importlib.machinery.SourceFileLoader):
 
 def _could_be_hy_src(filename):
     return os.path.isfile(filename) and (
-        os.path.splitext(filename)[1] not in importlib.machinery.SOURCE_SUFFIXES
+        os.path.splitext(filename)[1] not in PYTHON_SOURCE_SUFFIXES
     )
 
 
@@ -173,7 +244,10 @@ runhy = types.SimpleNamespace(
 # uses the hy compiler.
 hyc_compile = types.SimpleNamespace(
     compile=_patched(
-        py_compile.compile, importlib.machinery, 'SourceFileLoader', HyLoader
+        py_compile.compile,
+        importlib.machinery,
+        'SourceFileLoader',
+        HyLoader
         # XXX also write hdeps
     ),
     PyCompileError=py_compile.PyCompileError,
@@ -202,34 +276,36 @@ def _install_importer():
 
         zipimport._compile_source = _hy_compile_source
 
-    from importlib._bootstrap_external import (
-        SOURCE_SUFFIXES,
-        _get_supported_file_loaders,
-    )
+    from importlib._bootstrap_external import _get_supported_file_loaders
 
-    _quode = _get_supported_file_loaders.__code__
+    importlib.machinery.SOURCE_SUFFIXES.extend(HY_SOURCE_SUFFIXES)
 
     def _fake():
         extensions = ExtensionFileLoader, _imp.extension_suffixes()
-        source = SourceFileLoader, [".py"]
-        hy_source = HyLoader, [".hy"]
+        source = SourceFileLoader, PYTHON_SOURCE_SUFFIXES
+        hy_source = HyLoader, HY_SOURCE_SUFFIXES
         bytecode = SourcelessFileLoader, BYTECODE_SUFFIXES
         return [extensions, hy_source, source, bytecode]
 
     _get_supported_file_loaders.__code__ = _fake.__code__
-    _get_supported_file_loaders.__globals__["HyLoader"] = HyLoader
+    _get_supported_file_loaders.__globals__.update(
+        {
+            "HyLoader": HyLoader,
+            "PYTHON_SOURCE_SUFFIXES": PYTHON_SOURCE_SUFFIXES,
+            "HY_SOURCE_SUFFIXES": HY_SOURCE_SUFFIXES,
+        }
+    )
 
     for i, hook in enumerate(sys.path_hooks):
         if hook.__name__ == 'path_hook_for_FileFinder':
-            sys.path_hooks.pop(i)
+            sys.path_hooks[i] = importlib.machinery.FileFinder.path_hook(
+                *_get_supported_file_loaders()
+            )
             break
 
     #  This is actually needed; otherwise, pre-created finders assigned to the
     #  current dir (i.e. `''`) in `sys.path` will not catch absolute imports of
     #  directory-local modules!
-    sys.path_hooks.insert(
-        i, importlib.machinery.FileFinder.path_hook(*_get_supported_file_loaders())
-    )
     sys.path_importer_cache.clear()
 
     # Do this one just in case?

@@ -101,6 +101,11 @@ def cmdline_handler(scriptname, argv):
             help="run library module as a script",
         ),
         dict(
+            name=["-R"],
+            action="store_true",
+            help="(re)compile all Hy source files",
+        ),
+        dict(
             name=["--repl-output-fn"],
             dest="repl_output_fn",
             help="function for printing REPL output (e.g., repr)",
@@ -187,6 +192,9 @@ def cmdline_handler(scriptname, argv):
 
     if "B" in options:
         sys.dont_write_bytecode = True
+
+    if "R" in options:
+        hy.dont_read_bytecode = True
 
     if "unbuffered" in options:
         for k in "stdout", "stderr":
