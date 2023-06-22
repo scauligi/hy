@@ -161,7 +161,7 @@ class HyLoader(importlib.machinery.SourceFileLoader):
                         os.unlink(hdep_path)
                     except OSError:
                         pass
-                # re-raise to go back up the chain deleting bytecode
+                # re-raise to go unroll up the chain deleting bytecode
                 raise
 
     def _cache_bytecode(self, source_path, cache_path, data):
