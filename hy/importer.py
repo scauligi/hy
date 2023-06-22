@@ -13,7 +13,6 @@ import types
 import zipimport
 from contextlib import contextmanager
 from functools import wraps
-from importlib._bootstrap_external import _write_atomic
 
 import hy
 from hy.compiler import hy_compile
@@ -167,11 +166,15 @@ class HyLoader(importlib.machinery.SourceFileLoader):
     def _cache_bytecode(self, source_path, cache_path, data):
         super()._cache_bytecode(source_path, cache_path, data)
         hdep_path = _pyc_to_hdep_path(cache_path)
+        module = self.module
         deps = sorted(
             set(
                 macro.__module__.encode()
-                for macro in self.module._hy_macros.values()
-                if macro.__module__ != self.module.__name__
+                for macro in [
+                    *module._hy_macros.values(),
+                    *module._hy_reader_macros.values(),
+                ]
+                if macro.__module__ != module.__name__
             )
         )
         ctime = (int(time.time()) & 0xFFFFFFFF).to_bytes(4, 'little')
