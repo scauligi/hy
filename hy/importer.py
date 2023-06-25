@@ -121,7 +121,9 @@ class HyLoader(importlib.machinery.SourceFileLoader):
         res = super().get_code(fullname)
         return res
 
-    def _validate_hdeps(self, bytecode_path, name, exc_details):
+    def _validate_hdeps(self, bytecode_path, name, exc_details, seen=None):
+        if seen is None:
+            seen = set()
         hdep_path = _pyc_to_hdep_path(bytecode_path)
         try:
             fp = open(hdep_path, 'rb')
@@ -145,14 +147,23 @@ class HyLoader(importlib.machinery.SourceFileLoader):
                     if hdep_data:
                         hdeps = map(bytes.decode, hdep_data.split(b"\0"))
                         for hdep in hdeps:
-                            spec = importlib.util.find_spec(hdep)
-                            if spec is not None and spec.has_location:
-                                st = spec.loader.path_stats(spec.origin)
-                                if st['mtime'] > ctime:
-                                    msg = f'{exc_details["name"]}: macro dependency {hdep!r} is newer than cached bytecode'
-                                    _dprint(msg)
-                                    raise ImportError(msg, **exc_details)
-                                self._validate_hdeps(spec.cached, hdep, exc_details)
+                            if hdep in seen:
+                                continue
+                            seen.add(hdep)
+                            try:
+                                spec = importlib.util.find_spec(hdep)
+                            except ValueError as e:
+                                raise ImportError("", **exc_details) from e
+                            else:
+                                if spec is not None and spec.has_location:
+                                    st = spec.loader.path_stats(spec.origin)
+                                    if st['mtime'] > ctime:
+                                        msg = f'{exc_details["name"]}: macro dependency {hdep!r} is newer than cached bytecode'
+                                        _dprint(msg)
+                                        raise ImportError(msg, **exc_details)
+                                    self._validate_hdeps(
+                                        spec.cached, hdep, exc_details, seen
+                                    )
             except ImportError as e:
                 if not sys.dont_write_bytecode:
                     try:
@@ -160,7 +171,7 @@ class HyLoader(importlib.machinery.SourceFileLoader):
                         os.unlink(hdep_path)
                     except OSError:
                         pass
-                # re-raise to go unroll up the chain deleting bytecode
+                # re-raise to unroll up the chain deleting bytecode
                 raise
 
     def _cache_bytecode(self, source_path, cache_path, data):
