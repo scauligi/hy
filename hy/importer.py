@@ -18,7 +18,8 @@ import hy
 from hy.compiler import hy_compile
 from hy.reader import read_many
 
-HY_MAGIC_STRING = b'\x46\x14'  # + hy.__version__.encode() + b'\0'
+HY_MAGIC_STRING = b'\x46\x14'
+HY_HDEP_VERSION = b'\x00\x01'
 HY_SOURCE_SUFFIXES = [".hy"]
 HY_DEP_SUFFIX = ".hyd"
 PYTHON_SOURCE_SUFFIXES = importlib.machinery.SOURCE_SUFFIXES.copy()
@@ -89,7 +90,9 @@ def loader_module_obj(loader):
 
 
 def _pyc_to_hdep_path(bytecode_path):
-    return os.path.splitext(bytecode_path)[0] + HY_DEP_SUFFIX
+    dirname, basename = os.path.split(bytecode_path)
+    name = basename.split(os.path.extsep, maxsplit=1)[0]
+    return os.path.join(dirname, name) + HY_DEP_SUFFIX
 
 
 def _dprint(*args, **kwargs):
@@ -139,7 +142,12 @@ class HyLoader(importlib.machinery.SourceFileLoader):
                 with fp as stream:
                     magic = stream.read(len(HY_MAGIC_STRING))
                     if magic != HY_MAGIC_STRING:
-                        msg = (f'bad hdep magic for {name!r}',)
+                        msg = f'bad hdep magic for {name!r}'
+                        _dprint(msg)
+                        raise ImportError(msg, **exc_details)
+                    version = stream.read(len(HY_HDEP_VERSION))
+                    if version != HY_HDEP_VERSION:
+                        msg = f'bad hdep version for {name!r}'
                         _dprint(msg)
                         raise ImportError(msg, **exc_details)
                     ctime = int.from_bytes(stream.read(4), 'little')
@@ -190,6 +198,7 @@ class HyLoader(importlib.machinery.SourceFileLoader):
         )
         ctime = (int(time.time()) & 0xFFFFFFFF).to_bytes(4, 'little')
         hdeps = bytearray(HY_MAGIC_STRING)
+        hdeps.extend(HY_HDEP_VERSION)
         hdeps.extend(ctime)
         hdeps.extend(b"\0".join(deps))
         self.set_data(hdep_path, hdeps)
