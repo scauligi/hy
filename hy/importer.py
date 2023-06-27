@@ -18,8 +18,10 @@ import hy
 from hy.compiler import hy_compile
 from hy.reader import read_many
 
-HY_MAGIC_STRING = b'\x46\x14'
+HY_MAGIC = b'\x46\x14'
 HY_HDEP_VERSION = b'\x00\x01'
+HY_MAGIC_STRING = HY_MAGIC + HY_HDEP_VERSION
+
 HY_SOURCE_SUFFIXES = [".hy"]
 HY_DEP_SUFFIX = ".hyd"
 PYTHON_SOURCE_SUFFIXES = importlib.machinery.SOURCE_SUFFIXES.copy()
@@ -138,12 +140,7 @@ class HyLoader(importlib.machinery.SourceFileLoader):
                 with fp as stream:
                     magic = stream.read(len(HY_MAGIC_STRING))
                     if magic != HY_MAGIC_STRING:
-                        msg = f'bad hdep magic for {name!r}'
-                        _dprint(msg)
-                        raise ImportError(msg, **exc_details)
-                    version = stream.read(len(HY_HDEP_VERSION))
-                    if version != HY_HDEP_VERSION:
-                        msg = f'bad hdep version for {name!r}'
+                        msg = f'bad hdep magic/version for {name!r}'
                         _dprint(msg)
                         raise ImportError(msg, **exc_details)
                     while header := stream.read(16):
@@ -171,14 +168,6 @@ class HyLoader(importlib.machinery.SourceFileLoader):
 
                                 with _patch(spec.loader, 'source_to_code', _blagh):
                                     spec.loader.get_code(spec.name)
-                    # ctime = int.from_bytes(stream.read(4), 'little')
-                    # hdep_data = stream.read()
-                    # if hdep_data:
-                    #     hdeps = map(bytes.decode, hdep_data.split(b"\0"))
-                    #     for hdep in hdeps:
-                    #         if hdep in seen:
-                    #             continue
-                    #         seen.add(hdep)
             except ImportError as e:
                 if not sys.dont_write_bytecode:
                     try:
@@ -206,24 +195,15 @@ class HyLoader(importlib.machinery.SourceFileLoader):
                 )
             )
             if deps:
-                # XXX should get time from somewhere else
-                # ctime = (int(time.time()) & 0xFFFFFFFF).to_bytes(4, 'little')
                 hdeps = bytearray(HY_MAGIC_STRING)
-                hdeps.extend(HY_HDEP_VERSION)
                 for dep in deps:
                     # XXX importlib.util.find_spec?
                     spec = sys.modules[dep].__spec__
                     pyc = spec.cached
                     with open(pyc, 'rb') as fp:
-                        # pyc header:
-                        # 0..4  MAGIC_NUMBER (changes with python version)
-                        # 4..8  flags (eg timestamps vs hashes)
-                        # 8..16 source mtime + size OR source hash
                         header = fp.read(16)
                     hdeps.extend(header)
                     hdeps.extend(dep.encode() + b"\n")
-                # hdeps.extend(ctime)
-                # hdeps.extend(b"\0".join(deps))
                 self.set_data(hdep_path, hdeps)
             else:
                 with suppress(OSError):
