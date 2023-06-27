@@ -6,6 +6,8 @@ import platform
 import re
 import shlex
 import subprocess
+import sys
+import time
 from importlib.util import cache_from_source
 from pathlib import Path
 

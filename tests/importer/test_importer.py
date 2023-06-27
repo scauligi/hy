@@ -1,6 +1,9 @@
 import ast
 import importlib
+from importlib.util import cache_from_source
+import os
 import sys
+import time
 from importlib import reload
 from pathlib import Path
 
@@ -288,3 +291,73 @@ def test_zipimport(tmp_path):
         sys.path = [p for p in sys.path if p != str(zpath)]
     assert example.x == "Hy from ZIP"
     assert example.__file__ == str(zpath / "example.hy")
+
+
+@pytest.mark.skipif(sys.dont_write_bytecode, reason="Bytecode generation is suppressed")
+def test_updated_dependencies(tmp_path, capsys):
+    "Test that (require) recompiles bytecode when dependencies are updated."
+
+    sys.path.insert(0, str(tmp_path))
+    curtime = int(time.time())
+
+    def prep_file(name, body):
+        file = tmp_path / f'{name}.hy'
+        file.write_text(f'(eval-when-compile (print "compiling {name.upper()}"))\n{body}')
+        return file
+
+    def pycpath(path):
+        return Path(cache_from_source(str(path)))
+
+    xx = prep_file('xx', '(require yy [yy] uu [uu]) (print (yy) (uu))')
+    yy = prep_file('yy', '(require zz [zz]) (defmacro yy [] `#(4 ~(zz)))')
+    zz = prep_file('zz', '(defmacro zz [] `5)')
+    uu = prep_file('uu', '(defmacro uu [] `"uu14")')
+
+    # ensure everything is compiled first
+    runhy.run_path(str(xx))
+    assert all(pycpath(f).exists() for f in (xx, yy, zz, uu))
+    output = capsys.readouterr().out
+    assert 'compiling XX' in output
+    assert 'compiling YY' in output
+    assert 'compiling ZZ' in output
+    assert 'compiling UU' in output
+
+    # doesn't recompile anything if nothing has changed
+    del sys.modules['yy']
+    del sys.modules['zz']
+    del sys.modules['uu']
+    runhy.run_path(str(xx))
+    assert capsys.readouterr().out == '(4, 5) uu14\n'
+
+    curtime += 2
+    zz = prep_file('zz', '(defmacro zz [] `6)')
+    os.utime(zz, (curtime, curtime))
+    zzb = pycpath(zz)
+    # print('\n'.join(zzb.read_bytes()[i:i+4].hex() for i in range(0, 16, 4)))
+    # print(int.from_bytes(zzb.read_bytes()[8:12], 'little'))
+    # print(zzb.stat())
+    # runhy.run_path(str(xx))
+    # print(sorted(x.name for x in (tmp_path / '__pycache__').iterdir()))
+    del sys.modules['yy']
+    del sys.modules['zz']
+    del sys.modules['uu']
+    runhy.run_path(str(xx))
+    # print(capsys.readouterr().out)
+    assert capsys.readouterr().out == 'compiling XX\ncompiling YY\ncompiling ZZ\n(4, 6) uu14\n'
+
+    # assert False
+
+    # def import_from_path(path):
+    #     spec = importlib.util.spec_from_file_location("mymodule", path)
+    #     module = importlib.util.module_from_spec(spec)
+    #     spec.loader.exec_module(module)
+    #     return module
+
+    # assert import_from_path(p).pyctest("flim") == "XflimY"
+    # assert Path(importlib.util.cache_from_source(p)).exists()
+
+    # # Try running the bytecode.
+    # assert (
+    #     import_from_path(importlib.util.cache_from_source(p)).pyctest("flam")
+    #     == "XflamY"
+    # )

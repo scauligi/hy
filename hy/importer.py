@@ -165,7 +165,7 @@ class HyLoader(importlib.machinery.SourceFileLoader):
                             else:
                                 if spec is not None and spec.has_location:
                                     st = spec.loader.path_stats(spec.origin)
-                                    if st['mtime'] > ctime:
+                                    if int(st['mtime']) > ctime:
                                         msg = f'{exc_details["name"]}: macro dependency {hdep!r} is newer than cached bytecode'
                                         _dprint(msg)
                                         raise ImportError(msg, **exc_details)
