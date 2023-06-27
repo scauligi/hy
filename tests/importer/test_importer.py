@@ -12,7 +12,7 @@ import pytest
 import hy
 from hy.compiler import hy_compile, hy_eval
 from hy.errors import HyLanguageError, hy_exc_handler
-from hy.importer import HyLoader, runhy
+from hy.importer import HyLoader, runhy, pyc_to_hdep_path
 from hy.reader import read_many
 from hy.reader.exceptions import PrematureEndOfInput
 
@@ -293,6 +293,10 @@ def test_zipimport(tmp_path):
     assert example.__file__ == str(zpath / "example.hy")
 
 
+def pycpath(path):
+    return Path(cache_from_source(str(path)))
+
+
 @pytest.mark.skipif(sys.dont_write_bytecode, reason="Bytecode generation is suppressed")
 def test_updated_dependencies(tmp_path, capsys):
     "Test that (require) recompiles bytecode when dependencies are updated."
@@ -300,64 +304,64 @@ def test_updated_dependencies(tmp_path, capsys):
     sys.path.insert(0, str(tmp_path))
     curtime = int(time.time())
 
-    def prep_file(name, body):
-        file = tmp_path / f'{name}.hy'
-        file.write_text(f'(eval-when-compile (print "compiling {name.upper()}"))\n{body}')
+    def write_source(file, body):
+        nonlocal curtime
+        curtime += 1
+        file.write_text(body)
+        os.utime(file, (curtime, curtime))
         return file
 
-    def pycpath(path):
-        return Path(cache_from_source(str(path)))
+    xx = tmp_path / 'xx.hy'
+    yy = tmp_path / 'yy.hy'
+    zz = tmp_path / 'zz.hy'
+    zzz = tmp_path / 'zzz.hy'
 
-    xx = prep_file('xx', '(require yy [yy] uu [uu]) (print (yy) (uu))')
-    yy = prep_file('yy', '(require zz [zz]) (defmacro yy [] `#(4 ~(zz)))')
-    zz = prep_file('zz', '(defmacro zz [] `5)')
-    uu = prep_file('uu', '(defmacro uu [] `"uu14")')
+    write_source(xx, '(require yy [yy] zzz [zzz]) (print (yy) (zzz))')
+    write_source(yy, '(require zz :readers [zz]) (defmacro yy [] `#(3 ~#zz))')
+    write_source(zz, '(defreader zz `5)')
+    write_source(zzz, '(defmacro zzz [] `"zzz19")')
+
+    def run_file(path):
+        sys.modules.pop('xx', None)
+        sys.modules.pop('yy', None)
+        sys.modules.pop('zz', None)
+        sys.modules.pop('zzz', None)
+        runhy.run_path(str(path))
 
     # ensure everything is compiled first
-    runhy.run_path(str(xx))
-    assert all(pycpath(f).exists() for f in (xx, yy, zz, uu))
-    output = capsys.readouterr().out
-    assert 'compiling XX' in output
-    assert 'compiling YY' in output
-    assert 'compiling ZZ' in output
-    assert 'compiling UU' in output
+    run_file(xx)
+    pycs = [pycpath(f) for f in (xx, yy, zz, zzz)]
+    assert all(pyc.exists() for pyc in pycs)
+    assert capsys.readouterr().out == '(3, 5) zzz19\n'
 
-    # doesn't recompile anything if nothing has changed
-    del sys.modules['yy']
-    del sys.modules['zz']
-    del sys.modules['uu']
-    runhy.run_path(str(xx))
-    assert capsys.readouterr().out == '(4, 5) uu14\n'
+    # save pyc metadata
+    stats = [pyc.stat() for pyc in pycs]
 
-    curtime += 2
-    zz = prep_file('zz', '(defmacro zz [] `6)')
-    os.utime(zz, (curtime, curtime))
-    zzb = pycpath(zz)
-    # print('\n'.join(zzb.read_bytes()[i:i+4].hex() for i in range(0, 16, 4)))
-    # print(int.from_bytes(zzb.read_bytes()[8:12], 'little'))
-    # print(zzb.stat())
-    # runhy.run_path(str(xx))
-    # print(sorted(x.name for x in (tmp_path / '__pycache__').iterdir()))
-    del sys.modules['yy']
-    del sys.modules['zz']
-    del sys.modules['uu']
-    runhy.run_path(str(xx))
-    # print(capsys.readouterr().out)
-    assert capsys.readouterr().out == 'compiling XX\ncompiling YY\ncompiling ZZ\n(4, 6) uu14\n'
+    # shouldn't recompile anything if nothing has changed
+    run_file(xx)
+    assert capsys.readouterr().out == '(3, 5) zzz19\n'
+    assert [pyc.stat() for pyc in pycs] == stats
 
-    # assert False
+    # recompile if direct dependency has changed
+    write_source(zzz, '(defmacro zzz [] `"zzz14")')
+    run_file(xx)
+    assert capsys.readouterr().out == '(3, 5) zzz14\n'
+    assert [pyc.stat() for pyc in pycs] != stats
 
-    # def import_from_path(path):
-    #     spec = importlib.util.spec_from_file_location("mymodule", path)
-    #     module = importlib.util.module_from_spec(spec)
-    #     spec.loader.exec_module(module)
-    #     return module
+    # recompile if indirect dependency has changed
+    write_source(zz, '(defreader zz `6)')
+    run_file(xx)
+    assert capsys.readouterr().out == '(3, 6) zzz14\n'
 
-    # assert import_from_path(p).pyctest("flim") == "XflimY"
-    # assert Path(importlib.util.cache_from_source(p)).exists()
+    # recompile if updated dependency has been separately recompiled
+    write_source(yy, '(require zz :readers [zz]) (defmacro yy [] `#(4 ~#zz))')
+    run_file(yy)
+    run_file(xx)
+    assert capsys.readouterr().out == '(4, 6) zzz14\n'
 
-    # # Try running the bytecode.
-    # assert (
-    #     import_from_path(importlib.util.cache_from_source(p)).pyctest("flam")
-    #     == "XflamY"
-    # )
+    # don't check dependencies if *.hyd file doesn't exist
+    write_source(zz, '(defreader zz `9001)')
+    run_file(zz)
+    os.unlink(pyc_to_hdep_path(pycpath(yy)))
+    run_file(xx)
+    assert capsys.readouterr().out == '(4, 6) zzz14\n'

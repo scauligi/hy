@@ -11,6 +11,11 @@ def _initialize_env_var(env_var, default_val):
 
 
 # counterpart to sys.dont_write_bytecode;
+# setting this to `True` will prevent Hy
+# from writing dependency tracking files.
+dont_write_hdeps = False
+
+# counterpart to sys.dont_write_bytecode;
 # setting this to `True` will cause Hy to
 # (re)compile all Hy source files.
 dont_read_bytecode = False

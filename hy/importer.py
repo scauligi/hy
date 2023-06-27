@@ -1,5 +1,6 @@
 import builtins
 import importlib
+from importlib._bootstrap_external import _get_supported_file_loaders
 import importlib.machinery
 import importlib.util
 import inspect
@@ -8,10 +9,9 @@ import pkgutil
 import py_compile
 import runpy
 import sys
-import time
 import types
 import zipimport
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from functools import wraps
 
 import hy
@@ -89,7 +89,7 @@ def loader_module_obj(loader):
             del sys.modules[loader.name]
 
 
-def _pyc_to_hdep_path(bytecode_path):
+def pyc_to_hdep_path(bytecode_path):
     dirname, basename = os.path.split(bytecode_path)
     name = basename.split(os.path.extsep, maxsplit=1)[0]
     return os.path.join(dirname, name) + HY_DEP_SUFFIX
@@ -111,31 +111,27 @@ class HyLoader(importlib.machinery.SourceFileLoader):
 
     def get_code(self, fullname: str) -> types.CodeType | None:
         source_path = self.get_filename(fullname)
-        try:
-            bytecode_path = importlib.util.cache_from_source(source_path)
-        except NotImplementedError:
-            bytecode_path = None
-        else:
+        if not hy.dont_read_bytecode:
             try:
-                exc_details = {"name": fullname, "path": bytecode_path}
-                self._validate_hdeps(bytecode_path, fullname, exc_details)
-            except ImportError:
-                pass
+                bytecode_path = importlib.util.cache_from_source(source_path)
+            except NotImplementedError:
+                bytecode_path = None
+            else:
+                try:
+                    exc_details = {"name": fullname, "path": bytecode_path}
+                    self._validate_hdeps(bytecode_path, fullname, exc_details)
+                except ImportError:
+                    pass
         res = super().get_code(fullname)
         return res
 
     def _validate_hdeps(self, bytecode_path, name, exc_details, seen=None):
         if seen is None:
             seen = set()
-        hdep_path = _pyc_to_hdep_path(bytecode_path)
+        hdep_path = pyc_to_hdep_path(bytecode_path)
         try:
             fp = open(hdep_path, 'rb')
         except OSError:
-            if not sys.dont_write_bytecode:
-                try:
-                    os.unlink(bytecode_path)
-                except OSError:
-                    pass
             pass
         else:
             try:
@@ -150,28 +146,38 @@ class HyLoader(importlib.machinery.SourceFileLoader):
                         msg = f'bad hdep version for {name!r}'
                         _dprint(msg)
                         raise ImportError(msg, **exc_details)
-                    ctime = int.from_bytes(stream.read(4), 'little')
-                    hdep_data = stream.read()
-                    if hdep_data:
-                        hdeps = map(bytes.decode, hdep_data.split(b"\0"))
-                        for hdep in hdeps:
-                            if hdep in seen:
-                                continue
-                            seen.add(hdep)
-                            try:
-                                spec = importlib.util.find_spec(hdep)
-                            except ValueError as e:
-                                raise ImportError("", **exc_details) from e
-                            else:
-                                if spec is not None and spec.has_location:
-                                    st = spec.loader.path_stats(spec.origin)
-                                    if int(st['mtime']) > ctime:
-                                        msg = f'{exc_details["name"]}: macro dependency {hdep!r} is newer than cached bytecode'
+                    while (header := stream.read(16)):
+                        hdep = stream.readline().rstrip(b"\n").decode()
+                        if hdep in seen:
+                            continue
+                        seen.add(hdep)
+                        try:
+                            spec = importlib.util.find_spec(hdep)
+                        except ValueError as e:
+                            raise ImportError("", **exc_details) from e
+                        else:
+                            if spec is not None and spec.cached:
+                                # check that current (cached) hdep is the same version as what we were compiled with
+                                with open(spec.cached, 'rb') as fp:
+                                    if fp.read(16) != header:
+                                        msg = f'{exc_details["name"]}: macro dependency {hdep!r} has changed'
                                         _dprint(msg)
                                         raise ImportError(msg, **exc_details)
-                                    self._validate_hdeps(
-                                        spec.cached, hdep, exc_details, seen
-                                    )
+                                # check that cached hdep is valid
+                                def _blagh(data, path, *, _optimize=-1):
+                                    msg = f'{exc_details["name"]}: macro dependency {hdep!r} has changed'
+                                    _dprint(msg)
+                                    raise ImportError(msg, **exc_details)
+                                with _patch(spec.loader, 'source_to_code', _blagh):
+                                    spec.loader.get_code(spec.name)
+                    # ctime = int.from_bytes(stream.read(4), 'little')
+                    # hdep_data = stream.read()
+                    # if hdep_data:
+                    #     hdeps = map(bytes.decode, hdep_data.split(b"\0"))
+                    #     for hdep in hdeps:
+                    #         if hdep in seen:
+                    #             continue
+                    #         seen.add(hdep)
             except ImportError as e:
                 if not sys.dont_write_bytecode:
                     try:
@@ -182,26 +188,45 @@ class HyLoader(importlib.machinery.SourceFileLoader):
                 # re-raise to unroll up the chain deleting bytecode
                 raise
 
+    # note: this method is called only when sys.dont_write_bytecode is False
     def _cache_bytecode(self, source_path, cache_path, data):
         super()._cache_bytecode(source_path, cache_path, data)
-        hdep_path = _pyc_to_hdep_path(cache_path)
-        module = self.module
-        deps = sorted(
-            set(
-                macro.__module__.encode()
-                for macro in [
-                    *module._hy_macros.values(),
-                    *module._hy_reader_macros.values(),
-                ]
-                if macro.__module__ != module.__name__
+        if not hy.dont_write_hdeps:
+            hdep_path = pyc_to_hdep_path(cache_path)
+            module = self.module
+            deps = sorted(
+                set(
+                    macro.__module__
+                    for macro in [
+                        *module._hy_macros.values(),
+                        *module._hy_reader_macros.values(),
+                    ]
+                    if macro.__module__ != module.__name__
+                )
             )
-        )
-        ctime = (int(time.time()) & 0xFFFFFFFF).to_bytes(4, 'little')
-        hdeps = bytearray(HY_MAGIC_STRING)
-        hdeps.extend(HY_HDEP_VERSION)
-        hdeps.extend(ctime)
-        hdeps.extend(b"\0".join(deps))
-        self.set_data(hdep_path, hdeps)
+            if deps:
+                # XXX should get time from somewhere else
+                # ctime = (int(time.time()) & 0xFFFFFFFF).to_bytes(4, 'little')
+                hdeps = bytearray(HY_MAGIC_STRING)
+                hdeps.extend(HY_HDEP_VERSION)
+                for dep in deps:
+                    # XXX importlib.util.find_spec?
+                    spec = sys.modules[dep].__spec__
+                    pyc = spec.cached
+                    with open(pyc, 'rb') as fp:
+                        # pyc header:
+                        # 0..4  MAGIC_NUMBER (changes with python version)
+                        # 4..8  flags (eg timestamps vs hashes)
+                        # 8..16 source mtime + size OR source hash
+                        header = fp.read(16)
+                    hdeps.extend(header)
+                    hdeps.extend(dep.encode() + b"\n")
+                # hdeps.extend(ctime)
+                # hdeps.extend(b"\0".join(deps))
+                self.set_data(hdep_path, hdeps)
+            else:
+                with suppress(OSError):
+                    os.unlink(hdep_path)
 
     def source_to_code(self, data, path, *, _optimize=-1):
         if os.environ.get("HY_MESSAGE_WHEN_COMPILING"):
@@ -299,7 +324,6 @@ def _install_importer():
 
         zipimport._compile_source = _hy_compile_source
 
-    from importlib._bootstrap_external import _get_supported_file_loaders
 
     importlib.machinery.SOURCE_SUFFIXES.extend(HY_SOURCE_SUFFIXES)
 
