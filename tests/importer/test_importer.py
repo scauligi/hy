@@ -1,10 +1,10 @@
 import ast
 import importlib
-from importlib.util import cache_from_source
 import os
 import sys
 import time
 from importlib import reload
+from importlib.util import cache_from_source
 from pathlib import Path
 
 import pytest
@@ -12,7 +12,7 @@ import pytest
 import hy
 from hy.compiler import hy_compile, hy_eval
 from hy.errors import HyLanguageError, hy_exc_handler
-from hy.importer import HyLoader, runhy, pyc_to_hdep_path
+from hy.importer import HyLoader, pyc_to_hdep_path, runhy
 from hy.reader import read_many
 from hy.reader.exceptions import PrematureEndOfInput
 

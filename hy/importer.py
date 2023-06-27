@@ -1,6 +1,5 @@
 import builtins
 import importlib
-from importlib._bootstrap_external import _get_supported_file_loaders
 import importlib.machinery
 import importlib.util
 import inspect
@@ -13,6 +12,7 @@ import types
 import zipimport
 from contextlib import contextmanager, suppress
 from functools import wraps
+from importlib._bootstrap_external import _get_supported_file_loaders
 
 import hy
 from hy.compiler import hy_compile
@@ -146,7 +146,7 @@ class HyLoader(importlib.machinery.SourceFileLoader):
                         msg = f'bad hdep version for {name!r}'
                         _dprint(msg)
                         raise ImportError(msg, **exc_details)
-                    while (header := stream.read(16)):
+                    while header := stream.read(16):
                         hdep = stream.readline().rstrip(b"\n").decode()
                         if hdep in seen:
                             continue
@@ -168,6 +168,7 @@ class HyLoader(importlib.machinery.SourceFileLoader):
                                     msg = f'{exc_details["name"]}: macro dependency {hdep!r} has changed'
                                     _dprint(msg)
                                     raise ImportError(msg, **exc_details)
+
                                 with _patch(spec.loader, 'source_to_code', _blagh):
                                     spec.loader.get_code(spec.name)
                     # ctime = int.from_bytes(stream.read(4), 'little')
@@ -323,7 +324,6 @@ def _install_importer():
             )
 
         zipimport._compile_source = _hy_compile_source
-
 
     importlib.machinery.SOURCE_SUFFIXES.extend(HY_SOURCE_SUFFIXES)
 
