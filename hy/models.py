@@ -34,6 +34,8 @@ class Object:
     `end_column` 3.
     """
 
+    __match_args__ = ("_val_for_match",)
+
     properties = ["_start_line", "_end_line", "_start_column", "_end_column"]
 
     def replace(self, other, recursive=False):
@@ -81,6 +83,16 @@ class Object:
     @end_column.setter
     def end_column(self, value):
         self._end_column = value
+
+    @classmethod
+    def _python_base(cls):
+        for ty in cls.__mro__:
+            if not issubclass(ty, Object):
+                return ty
+
+    @property
+    def _val_for_match(self):
+        return self._python_base()(self)
 
     def __repr__(self):
         return (

@@ -173,7 +173,7 @@ def compile_quote(compiler, expr, root, arg):
         level = Inf if root == "quote" else 0)[0])
           # Only quasiquotes can unquote
 
-def render_quoted_form(compiler, form, level):
+def render_quoted_form(compiler, form, level, for_matching=False):
     """
     Render a quoted form as a new hy Expression.
 
@@ -209,7 +209,7 @@ def render_quoted_form(compiler, form, level):
     if isinstance(form, Sequence):
         contents = []
         for x in form:
-            f_contents, splice = render_quoted_form(compiler, x, level)
+            f_contents, splice = render_quoted_form(compiler, x, level, for_matching)
             if splice:
                 if is_unpack("iterable", f_contents):
                     raise compiler._syntax_error(f_contents, "`unpack-iterable` is not allowed here")
@@ -228,7 +228,10 @@ def render_quoted_form(compiler, form, level):
             body.extend([Keyword("conversion"), String(form.conversion)])
 
     elif isinstance(form, Symbol):
-        body = [String(form), Keyword("from_parser"), Symbol("True")]
+        if for_matching:
+            body = [String(form)]
+        else:
+            body = [String(form), Keyword("from_parser"), Symbol("True")]
 
     elif isinstance(form, Keyword):
         body = [String(form.name), Keyword("from_parser"), Symbol("True")]
@@ -1130,6 +1133,7 @@ _pattern.define(
         | in_tuple(many(_pattern | unpack("iterable")))
         | pexpr(keepsym("."), many(SYM))
         | pexpr(keepsym("|"), many(_pattern))
+        | pexpr(keepsym("quote"), FORM)
         | braces(many(LITERAL + _pattern), maybe(pvalue("unpack-mapping", SYM)))
         | pexpr(
             pexpr(keepsym("."), oneplus(SYM))
@@ -1246,6 +1250,10 @@ def compile_pattern(compiler, pattern):
             value,
             value=compiler.compile(dotform).expr,
         )
+    elif isinstance(value, Expression) and value[0] == Symbol("quote"):
+        stuff = render_quoted_form(compiler, value[1], Inf, for_matching=True)[0]
+        patterns = _pattern.parse([stuff])
+        return compile_pattern(compiler, patterns)
     elif isinstance(value, (Tuple, List)):
         patterns = value[0]
         patterns = [
