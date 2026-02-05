@@ -20,6 +20,19 @@
     (hy.models.Dict (map S ["foo" "bar" "baz" "quux"])))))
 
 
+(do-mac (when hy.compat.PY3_14 '(defn test-quote-tstring []
+  (setv tstr 't"foo{3}bar")
+  (assert (= tstr
+             (hy.models.FString [(hy.models.String "foo")
+                                 (hy.models.FComponent [(hy.models.Integer 3)])
+                                 (hy.models.String "bar")])))
+  ;; as of this writing, models don't implicitly compare their _extra_kwargs fields
+  ;; so we need to explicitly check these values
+  (assert tstr.is-tstring)
+  (assert (. tstr [1] is-tstring))
+  (assert (. tstr [1] expression) "3"))))
+
+
 (defn test-quoted-hoistable []
   (setv f '(if True True True))
   (assert (= (get f 0) 'if))
